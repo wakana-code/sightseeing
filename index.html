@@ -1,0 +1,811 @@
+<!-- Output: html -->
+<!-- File: tulip_horror.html -->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tulpenveld - 夜のチューリップ畑</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #0d1013;
+    font-family: "Times New Roman", serif;
+  }
+  canvas#scene {
+    display: block;
+    filter: saturate(0.75) contrast(1.08);
+  }
+  #vignette {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0) 40%, rgba(0,0,0,0.88) 100%);
+  }
+  #grain {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    opacity: 0.08;
+    mix-blend-mode: overlay;
+  }
+  #title {
+    position: fixed;
+    top: 6%;
+    width: 100%;
+    text-align: center;
+    color: rgba(200, 190, 175, 0.55);
+    letter-spacing: 0.6em;
+    font-size: 22px;
+    pointer-events: none;
+    text-shadow: 0 0 12px rgba(0,0,0,0.9);
+  }
+  #hint {
+    position: fixed;
+    left: 16px;
+    bottom: 14px;
+    color: rgba(180, 180, 180, 0.4);
+    font-size: 12px;
+    font-family: sans-serif;
+    pointer-events: none;
+    transition: opacity 2s;
+  }
+</style>
+</head>
+<body>
+<div id="title">TULPENVELD</div>
+<div id="vignette"></div>
+<canvas id="grain" width="256" height="256"></canvas>
+<div id="hint">ドラッグ: 視点 / ホイール: ズーム / 右ドラッグ: 移動</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+
+// ---------- 基本ユーティリティ ----------
+const rand = (a, b) => a + Math.random() * (b - a);
+
+function heightAt(x, z) {
+  let h = 0.25 * Math.sin(x * 0.08) * Math.cos(z * 0.07);
+  h += 0.12 * Math.sin(x * 0.21 + z * 0.13);
+  const d = Math.hypot(x, z + 8);
+  h += 0.6 * Math.exp(-(d * d) / 30);
+  return h;
+}
+
+function finishTexture(canvas, repeatX = 1, repeatY = 1) {
+  const t = new THREE.CanvasTexture(canvas);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = THREE.RepeatWrapping;
+  t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repeatX, repeatY);
+  t.anisotropy = 8;
+  return t;
+}
+
+function addNoise(g, size, amount) {
+  const img = g.getImageData(0, 0, size, size);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const n = (Math.random() - 0.5) * amount;
+    img.data[i] += n;
+    img.data[i + 1] += n;
+    img.data[i + 2] += n;
+  }
+  g.putImageData(img, 0, 0);
+}
+
+function addStains(g, size, count, color) {
+  for (let i = 0; i < count; i++) {
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    const r = 10 + Math.random() * 60;
+    const grd = g.createRadialGradient(x, y, 0, x, y, r);
+    grd.addColorStop(0, color);
+    grd.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = grd;
+    g.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+}
+
+// ---------- 手続き生成テクスチャ ----------
+function makeWoodTexture(repeatX, repeatY, darker = false) {
+  const size = 512;
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  g.fillStyle = "#2a1f17";
+  g.fillRect(0, 0, size, size);
+
+  const pw = 32;
+  for (let x = 0; x < size; x += pw) {
+    const s = (darker ? 12 : 20) + Math.random() * 22;
+    g.fillStyle = `rgb(${s + 18},${s + 9},${s})`;
+    g.fillRect(x, 0, pw - 2, size);
+    for (let i = 0; i < 40; i++) {
+      g.strokeStyle = `rgba(0,0,0,${Math.random() * 0.3})`;
+      g.lineWidth = Math.random() * 1.5;
+      g.beginPath();
+      const gx = x + Math.random() * pw;
+      g.moveTo(gx, 0);
+      g.bezierCurveTo(gx + rand(-3, 3), 170, gx + rand(-3, 3), 340, gx + rand(-2, 2), size);
+      g.stroke();
+    }
+    g.fillStyle = "rgba(0,0,0,0.65)";
+    g.fillRect(x + pw - 2, 0, 2, size);
+  }
+
+  addStains(g, size, 70, "rgba(8,6,4,0.4)");
+
+  const moss = g.createLinearGradient(0, size, 0, size * 0.55);
+  moss.addColorStop(0, "rgba(38,52,24,0.75)");
+  moss.addColorStop(1, "rgba(38,52,24,0)");
+  g.fillStyle = moss;
+  g.fillRect(0, size * 0.55, size, size * 0.45);
+
+  for (let i = 0; i < 25; i++) {
+    g.strokeStyle = "rgba(0,0,0,0.7)";
+    g.lineWidth = 1;
+    g.beginPath();
+    let cx = Math.random() * size;
+    let cy = Math.random() * size;
+    g.moveTo(cx, cy);
+    for (let k = 0; k < 6; k++) {
+      cx += rand(-4, 4);
+      cy += rand(4, 14);
+      g.lineTo(cx, cy);
+    }
+    g.stroke();
+  }
+
+  addNoise(g, size, 20);
+  return finishTexture(c, repeatX, repeatY);
+}
+
+function makeStoneTexture() {
+  const size = 512;
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  g.fillStyle = "#2b2b2a";
+  g.fillRect(0, 0, size, size);
+  const bh = 40;
+  for (let y = 0; y < size; y += bh) {
+    const offset = (y / bh) % 2 === 0 ? 0 : 40;
+    for (let x = -80; x < size; x += 80) {
+      const s = 35 + Math.random() * 25;
+      g.fillStyle = `rgb(${s},${s},${s - 3})`;
+      g.fillRect(x + offset + 2, y + 2, 76, bh - 4);
+    }
+  }
+  addStains(g, size, 50, "rgba(30,40,20,0.35)");
+  addNoise(g, size, 30);
+  return finishTexture(c, 3, 1);
+}
+
+function makeSoilTexture() {
+  const size = 512;
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  g.fillStyle = "#1a140f";
+  g.fillRect(0, 0, size, size);
+  addStains(g, size, 120, "rgba(40,30,20,0.5)");
+  addStains(g, size, 60, "rgba(5,4,3,0.5)");
+  addNoise(g, size, 35);
+  return finishTexture(c, 60, 60);
+}
+
+function makeThatchTexture() {
+  const size = 512;
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  g.fillStyle = "#1c1915";
+  g.fillRect(0, 0, size, size);
+  for (let i = 0; i < 3000; i++) {
+    const s = 20 + Math.random() * 30;
+    g.strokeStyle = `rgba(${s + 10},${s + 6},${s},0.6)`;
+    g.lineWidth = Math.random() * 2;
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    g.beginPath();
+    g.moveTo(x, y);
+    g.lineTo(x + rand(-3, 3), y + rand(10, 30));
+    g.stroke();
+  }
+  addStains(g, size, 40, "rgba(30,45,20,0.4)");
+  addNoise(g, size, 20);
+  return finishTexture(c, 4, 2);
+}
+
+function makeTornClothTexture() {
+  const size = 256;
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  g.fillStyle = "#5a5246";
+  g.fillRect(0, 0, size, size);
+  addStains(g, size, 40, "rgba(20,15,10,0.6)");
+  addNoise(g, size, 30);
+  g.globalCompositeOperation = "destination-out";
+  for (let i = 0; i < 18; i++) {
+    g.beginPath();
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    g.moveTo(x, y);
+    for (let k = 0; k < 7; k++) {
+      g.lineTo(x + rand(-35, 35), y + rand(-35, 35));
+    }
+    g.closePath();
+    g.fill();
+  }
+  g.fillRect(0, 0, size, rand(20, 50));
+  for (let x = 0; x < size; x += 8) {
+    g.fillRect(x, size - rand(5, 40), 8, 40);
+  }
+  return finishTexture(c);
+}
+
+function makeSoftSprite(inner, outer) {
+  const size = 128;
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  const grd = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  grd.addColorStop(0, inner);
+  grd.addColorStop(1, outer);
+  g.fillStyle = grd;
+  g.fillRect(0, 0, size, size);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+// ---------- レンダラー / シーン ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.domElement.id = "scene";
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.95;
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+const fogColor = new THREE.Color(0x161b20);
+scene.background = fogColor;
+scene.fog = new THREE.FogExp2(fogColor, 0.032);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 300);
+camera.position.set(6, 2.0, 14);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 3.5, -8);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.minDistance = 4;
+controls.maxDistance = 40;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.25;
+controls.addEventListener("start", () => {
+  controls.autoRotate = false;
+  document.getElementById("hint").style.opacity = "0";
+});
+
+// ---------- ライティング ----------
+const hemi = new THREE.HemisphereLight(0x3a4a5c, 0x0e0b08, 0.6);
+scene.add(hemi);
+
+const moonLight = new THREE.DirectionalLight(0x9db0d0, 1.2);
+moonLight.position.set(-25, 35, -15);
+moonLight.target.position.set(0, 0, -8);
+moonLight.castShadow = true;
+moonLight.shadow.mapSize.set(2048, 2048);
+moonLight.shadow.camera.left = -25;
+moonLight.shadow.camera.right = 25;
+moonLight.shadow.camera.top = 25;
+moonLight.shadow.camera.bottom = -25;
+moonLight.shadow.camera.near = 1;
+moonLight.shadow.camera.far = 100;
+moonLight.shadow.bias = -0.0005;
+moonLight.shadow.normalBias = 0.02;
+scene.add(moonLight);
+scene.add(moonLight.target);
+
+// 月
+const moon = new THREE.Mesh(
+  new THREE.SphereGeometry(3, 32, 16),
+  new THREE.MeshBasicMaterial({ color: 0xc9d2da, fog: false })
+);
+moon.position.set(-45, 32, -80);
+scene.add(moon);
+
+const moonGlow = new THREE.Sprite(
+  new THREE.SpriteMaterial({
+    map: makeSoftSprite("rgba(170,190,210,0.45)", "rgba(170,190,210,0)"),
+    fog: false,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  })
+);
+moonGlow.scale.set(30, 30, 1);
+moonGlow.position.copy(moon.position);
+scene.add(moonGlow);
+
+// ---------- 地面 ----------
+const groundGeo = new THREE.PlaneGeometry(160, 160, 160, 160);
+groundGeo.rotateX(-Math.PI / 2);
+const gp = groundGeo.attributes.position;
+for (let i = 0; i < gp.count; i++) {
+  gp.setY(i, heightAt(gp.getX(i), gp.getZ(i)));
+}
+groundGeo.computeVertexNormals();
+const soilTex = makeSoilTexture();
+const ground = new THREE.Mesh(
+  groundGeo,
+  new THREE.MeshStandardMaterial({
+    map: soilTex,
+    bumpMap: soilTex,
+    bumpScale: 0.6,
+    roughness: 1,
+    metalness: 0
+  })
+);
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------- 枯れ木 ----------
+const barkMat = new THREE.MeshStandardMaterial({ color: 0x1a1612, roughness: 1 });
+
+function makeTree(depth, len, rad) {
+  const g = new THREE.Group();
+  const geo = new THREE.CylinderGeometry(rad * 0.65, rad, len, 6);
+  geo.translate(0, len / 2, 0);
+  const m = new THREE.Mesh(geo, barkMat);
+  m.castShadow = true;
+  g.add(m);
+  if (depth > 0) {
+    const kids = depth > 3 ? 2 : 3;
+    for (let i = 0; i < kids; i++) {
+      const child = makeTree(depth - 1, len * rand(0.55, 0.78), rad * 0.62);
+      child.position.y = len * rand(0.7, 1.0);
+      child.rotation.set(rand(0.35, 0.95), rand(0, Math.PI * 2), 0, "YXZ");
+      g.add(child);
+    }
+  }
+  return g;
+}
+
+const treeSpots = [
+  [-9, 5],
+  [-26, -12],
+  [27, -18],
+  [18, 10],
+  [-20, 24]
+];
+treeSpots.forEach(([x, z]) => {
+  const t = makeTree(5, rand(2.2, 3.2), rand(0.18, 0.28));
+  t.position.set(x, heightAt(x, z) - 0.1, z);
+  t.rotation.set(rand(-0.08, 0.08), rand(0, Math.PI * 2), rand(-0.08, 0.08));
+  scene.add(t);
+});
+
+// ---------- チューリップ（インスタンシング） ----------
+const swayUniforms = { uTime: { value: 0 } };
+
+function addSway(mat) {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = swayUniforms.uTime;
+    shader.vertexShader = "uniform float uTime;\n" + shader.vertexShader.replace(
+      "#include <begin_vertex>",
+      `#include <begin_vertex>
+      float hh = max(position.y, 0.0);
+      vec3 ip = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
+      float w = sin(uTime * 1.1 + ip.x * 0.4 + ip.z * 0.15) + 0.5 * sin(uTime * 2.6 + ip.z * 0.9);
+      transformed.x += w * 0.2 * hh * hh;
+      transformed.z += w * 0.08 * hh * hh;`
+    );
+  };
+}
+
+const headGeo = new THREE.LatheGeometry(
+  [
+    new THREE.Vector2(0.0, 0.42),
+    new THREE.Vector2(0.022, 0.425),
+    new THREE.Vector2(0.042, 0.445),
+    new THREE.Vector2(0.052, 0.475),
+    new THREE.Vector2(0.05, 0.505),
+    new THREE.Vector2(0.042, 0.53),
+    new THREE.Vector2(0.047, 0.548)
+  ],
+  8
+);
+
+const stemGeo = new THREE.CylinderGeometry(0.005, 0.008, 0.43, 4);
+stemGeo.translate(0, 0.215, 0);
+
+function makeLeaf(angle) {
+  const leaf = new THREE.PlaneGeometry(0.035, 0.24, 1, 4);
+  leaf.translate(0, 0.12, 0);
+  const p = leaf.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const y = p.getY(i);
+    p.setZ(i, Math.pow(y / 0.24, 2) * 0.05);
+  }
+  leaf.rotateY(angle);
+  leaf.computeVertexNormals();
+  return leaf;
+}
+
+const stemMerged = mergeGeometries([stemGeo, makeLeaf(0), makeLeaf(Math.PI * 0.9)]);
+
+const headMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff,
+  roughness: 0.65,
+  metalness: 0,
+  side: THREE.DoubleSide
+});
+const stemMat = new THREE.MeshStandardMaterial({
+  color: 0x1c2a15,
+  roughness: 0.9,
+  side: THREE.DoubleSide
+});
+addSway(headMat);
+addSway(stemMat);
+
+const MAX_TULIPS = 16000;
+const heads = new THREE.InstancedMesh(headGeo, headMat, MAX_TULIPS);
+const stems = new THREE.InstancedMesh(stemMerged, stemMat, MAX_TULIPS);
+heads.receiveShadow = true;
+stems.receiveShadow = true;
+
+const palette = [
+  new THREE.Color(0x5a0d12),
+  new THREE.Color(0x3b1e3f),
+  new THREE.Color(0x8f8a80),
+  new THREE.Color(0x6e5f26)
+];
+
+const dummy = new THREE.Object3D();
+const tmpColor = new THREE.Color();
+let tulipCount = 0;
+
+for (let z = -24; z <= 24; z += 0.5) {
+  for (let x = -24; x <= 24; x += 0.32) {
+    if (tulipCount >= MAX_TULIPS) break;
+    if (Math.random() < 0.18) continue;
+
+    const px = x + rand(-0.06, 0.06);
+    const pz = z + rand(-0.05, 0.05);
+
+    if (Math.hypot(px, pz + 8) < 5) continue;
+    if (Math.abs(px) < 0.9 && pz > -8) continue;
+    if (treeSpots.some(([tx, tz]) => Math.hypot(px - tx, pz - tz) < 1.3)) continue;
+
+    const wilted = Math.random() < 0.12;
+    const tilt = wilted ? 0.55 : 0.08;
+    const s = wilted ? rand(0.6, 0.8) : rand(0.85, 1.2);
+
+    dummy.position.set(px, heightAt(px, pz), pz);
+    dummy.rotation.set(rand(-tilt, tilt), rand(0, Math.PI * 2), rand(-tilt, tilt));
+    dummy.scale.set(s, s, s);
+    dummy.updateMatrix();
+    heads.setMatrixAt(tulipCount, dummy.matrix);
+    stems.setMatrixAt(tulipCount, dummy.matrix);
+
+    const stripe = Math.floor((pz + 24) / 6);
+    tmpColor.copy(palette[stripe % palette.length]);
+    tmpColor.offsetHSL(rand(-0.015, 0.015), rand(-0.1, 0.05), rand(-0.05, 0.03));
+    if (wilted) tmpColor.multiplyScalar(0.45);
+    heads.setColorAt(tulipCount, tmpColor);
+
+    tulipCount++;
+  }
+}
+heads.count = tulipCount;
+stems.count = tulipCount;
+heads.instanceMatrix.needsUpdate = true;
+stems.instanceMatrix.needsUpdate = true;
+heads.instanceColor.needsUpdate = true;
+scene.add(heads);
+scene.add(stems);
+
+// ---------- 柵 ----------
+const fenceMat = new THREE.MeshStandardMaterial({
+  map: makeWoodTexture(1, 1, true),
+  roughness: 1
+});
+for (let side of [-1.2, 1.2]) {
+  for (let z = 13; z > -4; z -= 1.8) {
+    if (Math.random() < 0.2) continue;
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, rand(0.7, 1.1), 0.1), fenceMat);
+    const px = side + rand(-0.05, 0.05);
+    post.position.set(px, heightAt(px, z) + 0.4, z);
+    post.rotation.set(rand(-0.2, 0.2), rand(-0.3, 0.3), rand(-0.25, 0.25));
+    post.castShadow = true;
+    scene.add(post);
+  }
+}
+
+// ---------- 風車 ----------
+const windmill = new THREE.Group();
+const baseY = heightAt(0, -8) - 0.1;
+windmill.position.set(0, baseY, -8);
+scene.add(windmill);
+
+const woodTex = makeWoodTexture(4, 1);
+const towerMat = new THREE.MeshStandardMaterial({
+  map: woodTex,
+  bumpMap: woodTex,
+  bumpScale: 1.2,
+  roughness: 0.95
+});
+const stoneTex = makeStoneTexture();
+const stoneMat = new THREE.MeshStandardMaterial({
+  map: stoneTex,
+  bumpMap: stoneTex,
+  bumpScale: 1.5,
+  roughness: 1
+});
+const thatchTex = makeThatchTexture();
+const capMat = new THREE.MeshStandardMaterial({
+  map: thatchTex,
+  bumpMap: thatchTex,
+  bumpScale: 1.5,
+  roughness: 1
+});
+const sailWoodMat = new THREE.MeshStandardMaterial({
+  map: makeWoodTexture(1, 4, true),
+  roughness: 1
+});
+
+function addMesh(parent, geo, mat, x, y, z) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+
+const base = addMesh(windmill, new THREE.CylinderGeometry(2.35, 2.6, 0.6, 8), stoneMat, 0, 0.3, 0);
+base.rotation.y = Math.PI / 8;
+
+const tower = addMesh(windmill, new THREE.CylinderGeometry(1.4, 2.2, 7.4, 8), towerMat, 0, 4.3, 0);
+tower.rotation.y = Math.PI / 8;
+
+const faceTilt = -Math.atan(0.8 / 7.4);
+
+const door = addMesh(windmill, new THREE.BoxGeometry(0.9, 1.6, 0.15), new THREE.MeshStandardMaterial({ color: 0x120d09, roughness: 1 }), 0, 1.4, 1.98);
+door.rotation.x = faceTilt;
+
+const windowMat = new THREE.MeshBasicMaterial({ color: 0xffa050 });
+const windowPane = addMesh(windmill, new THREE.PlaneGeometry(0.35, 0.5), windowMat, 0, 4.8, 1.66);
+windowPane.rotation.x = faceTilt;
+windowPane.castShadow = false;
+
+const frameMat = new THREE.MeshStandardMaterial({ color: 0x0f0b08, roughness: 1 });
+const frameV = addMesh(windmill, new THREE.BoxGeometry(0.04, 0.55, 0.04), frameMat, 0, 4.8, 1.68);
+frameV.rotation.x = faceTilt;
+const frameH = addMesh(windmill, new THREE.BoxGeometry(0.4, 0.04, 0.04), frameMat, 0, 4.8, 1.68);
+frameH.rotation.x = faceTilt;
+
+const lantern = new THREE.PointLight(0xff8a3d, 6, 10, 2);
+lantern.position.set(0, 4.8, 2.2);
+windmill.add(lantern);
+
+const cap = addMesh(
+  windmill,
+  new THREE.SphereGeometry(1.6, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+  capMat,
+  0, 8.0, 0
+);
+cap.scale.set(1, 0.9, 1.25);
+
+const tail = addMesh(windmill, new THREE.BoxGeometry(0.15, 8.28, 0.15), sailWoodMat, 0, 4.25, -3.25);
+tail.rotation.x = 0.437;
+const tailWheel = addMesh(windmill, new THREE.TorusGeometry(0.45, 0.06, 6, 16), frameMat, 0, 0.5, -5);
+tailWheel.rotation.y = Math.PI / 2;
+
+const shaft = addMesh(windmill, new THREE.CylinderGeometry(0.15, 0.15, 2.6, 8), frameMat, 0, 8.4, 1.3);
+shaft.rotation.x = Math.PI / 2;
+addMesh(windmill, new THREE.SphereGeometry(0.28, 12, 8), frameMat, 0, 8.4, 2.6);
+
+const sailsMount = new THREE.Group();
+sailsMount.position.set(0, 8.4, 2.7);
+sailsMount.rotation.x = -0.1;
+windmill.add(sailsMount);
+
+const sails = new THREE.Group();
+sailsMount.add(sails);
+
+const clothMat = new THREE.MeshStandardMaterial({
+  map: makeTornClothTexture(),
+  alphaTest: 0.5,
+  side: THREE.DoubleSide,
+  roughness: 1
+});
+
+function makeBlade(broken, withCloth) {
+  const blade = new THREE.Group();
+  addMesh(blade, new THREE.BoxGeometry(0.14, 6.6, 0.14), sailWoodMat, 0, 3.3, 0);
+
+  const railLen = broken ? 3.2 : 5.2;
+  const rail = addMesh(blade, new THREE.BoxGeometry(0.06, railLen, 0.06), sailWoodMat, 1.2, 1.2 + railLen / 2, -0.05);
+  if (broken) rail.rotation.z = 0.06;
+
+  for (let y = 1.3; y <= 6.3; y += 0.3) {
+    if (broken && y > 4.4 && Math.random() < 0.7) continue;
+    if (Math.random() < 0.08) continue;
+    const slat = addMesh(blade, new THREE.BoxGeometry(1.1, 0.05, 0.04), sailWoodMat, 0.65, y, -0.05);
+    if (broken && y > 4.0) {
+      slat.rotation.z = rand(-0.5, 0.5);
+      slat.position.x += rand(-0.2, 0.1);
+    }
+  }
+
+  if (withCloth) {
+    const cloth = addMesh(blade, new THREE.PlaneGeometry(1.05, 3.6), clothMat, 0.65, 4.4, -0.09);
+    cloth.castShadow = true;
+  }
+  return blade;
+}
+
+for (let i = 0; i < 4; i++) {
+  const blade = makeBlade(i === 2, i === 0);
+  blade.rotation.z = (i * Math.PI) / 2;
+  sails.add(blade);
+}
+
+// ---------- 霧のパーティクル ----------
+const MIST_COUNT = 500;
+const mistPositions = new Float32Array(MIST_COUNT * 3);
+for (let i = 0; i < MIST_COUNT; i++) {
+  mistPositions[i * 3] = rand(-30, 30);
+  mistPositions[i * 3 + 1] = rand(0.1, 1.3);
+  mistPositions[i * 3 + 2] = rand(-30, 20);
+}
+const mistGeo = new THREE.BufferGeometry();
+mistGeo.setAttribute("position", new THREE.BufferAttribute(mistPositions, 3));
+const mist = new THREE.Points(
+  mistGeo,
+  new THREE.PointsMaterial({
+    map: makeSoftSprite("rgba(255,255,255,1)", "rgba(255,255,255,0)"),
+    size: 4,
+    color: 0x9aa6b0,
+    transparent: true,
+    opacity: 0.07,
+    depthWrite: false
+  })
+);
+scene.add(mist);
+
+// ---------- 畑に立つ「何か」 ----------
+const figureMat = new THREE.MeshBasicMaterial({ color: 0x050505 });
+const figure = new THREE.Group();
+const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 1.35, 4, 8), figureMat);
+body.position.y = 0.85;
+figure.add(body);
+const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 12, 8), figureMat);
+head.position.y = 1.85;
+figure.add(head);
+figure.visible = false;
+scene.add(figure);
+
+let figureTimer = 7;
+
+function placeFigure() {
+  for (let k = 0; k < 30; k++) {
+    const x = rand(-20, 20);
+    const z = rand(-20, 20);
+    const d = Math.hypot(x - camera.position.x, z - camera.position.z);
+    if (d > 11 && d < 20 && Math.hypot(x, z + 8) > 5) {
+      figure.position.set(x, heightAt(x, z), z);
+      figure.lookAt(camera.position.x, figure.position.y, camera.position.z);
+      return true;
+    }
+  }
+  return false;
+}
+
+// ---------- フィルムグレイン ----------
+const grainCanvas = document.getElementById("grain");
+const grainCtx = grainCanvas.getContext("2d");
+const grainImg = grainCtx.createImageData(256, 256);
+
+function updateGrain() {
+  const d = grainImg.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = Math.random() * 255;
+    d[i] = d[i + 1] = d[i + 2] = v;
+    d[i + 3] = 255;
+  }
+  grainCtx.putImageData(grainImg, 0, 0);
+}
+
+// ---------- アニメーション ----------
+const clock = new THREE.Clock();
+let blackoutUntil = 0;
+let frame = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+  frame++;
+
+  swayUniforms.uTime.value = t;
+
+  // 古い風車らしい、不規則でぎこちない回転
+  let speed = 0.14 + 0.08 * Math.sin(t * 0.4);
+  if (Math.sin(t * 0.13) > 0.85) speed *= 0.08;
+  sails.rotation.z -= dt * speed;
+
+  // 窓の明かりのちらつきと、たまの消灯
+  if (t > blackoutUntil && Math.random() < 0.003) {
+    blackoutUntil = t + rand(0.15, 0.8);
+  }
+  let flicker = 0.75 + 0.15 * Math.sin(t * 13.0) + 0.1 * Math.sin(t * 31.0 + 1.3);
+  if (t < blackoutUntil) flicker = 0.03;
+  lantern.intensity = 6 * flicker;
+  windowMat.color.setRGB(1.0 * flicker, 0.55 * flicker, 0.25 * flicker);
+
+  // 霧の流れ
+  const mp = mistGeo.attributes.position;
+  for (let i = 0; i < MIST_COUNT; i++) {
+    let x = mp.getX(i) + dt * 0.35;
+    if (x > 30) x = -30;
+    mp.setX(i, x);
+  }
+  mp.needsUpdate = true;
+
+  // 「何か」の出没
+  figureTimer -= dt;
+  if (figureTimer <= 0) {
+    if (figure.visible) {
+      figure.visible = false;
+      figureTimer = rand(6, 14);
+    } else if (placeFigure()) {
+      figure.visible = true;
+      figureTimer = rand(1.5, 4);
+    } else {
+      figureTimer = 2;
+    }
+  }
+  if (figure.visible && camera.position.distanceTo(figure.position) < 6) {
+    figure.visible = false;
+    figureTimer = rand(8, 14);
+  }
+
+  if (frame % 3 === 0) updateGrain();
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
